@@ -288,6 +288,71 @@ describe('audit：定向用例', () => {
 
 /* ---------------- 暴力对照 ---------------- */
 
+describe('audit：安全整数范围内的大数值', () => {
+  it('验收用例：重频 4328521727（> 2^32）与大时刻保持精确，唯一分组、零漏发', () => {
+    // 两部雷达各连续发射三次：0 / 100 起始，重频均为 4328521727 µs。
+    // 该重频超过 32 位，旧实现会把它截断成 33554431。
+    const times = [0, 100, 4328521727, 4328521827, 8657043454, 8657043554];
+    const outcome = audit({
+      times,
+      pris: [4328521727],
+      maxMissed: 0,
+    });
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(0);
+    expect(outcome.hasMultiple).toBe(false);
+    expect(outcome.sequences).toEqual([
+      { pri: 4328521727, members: [0, 2, 4] },
+      { pri: 4328521727, members: [1, 3, 5] },
+    ]);
+    // 每条序列按原始时刻复算漏发数必须为整数 0
+    for (const seq of outcome.sequences) {
+      let missed = 0;
+      for (let k = 1; k < seq.members.length; k++) {
+        missed += (times[seq.members[k]] - times[seq.members[k - 1]]) / seq.pri - 1;
+      }
+      expect(Number.isInteger(missed)).toBe(true);
+      expect(missed).toBe(0);
+    }
+  });
+
+  it('重频恰好越过旧 25 位打包边界（2^25）时不被截断', () => {
+    const pri = 33554432; // 2^25，旧打包仅存 25 位重频，会塌缩为 0
+    const outcome = audit({
+      times: [0, 1, pri, pri + 1, 2 * pri, 2 * pri + 1],
+      pris: [pri],
+      maxMissed: 0,
+    });
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(0);
+    expect(outcome.sequences).toEqual([
+      { pri, members: [0, 2, 4] },
+      { pri, members: [1, 3, 5] },
+    ]);
+  });
+
+  it('大重频含漏发：代价统计与规范解不丢精度', () => {
+    const pri = 3 * 4294967296 + 7; // 12884901895，超过 2^32
+    const times = [0, 5, pri, pri + 5, 3 * pri, 3 * pri + 5];
+    const outcome = audit({ times, pris: [pri], maxMissed: 2 });
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(2); // 每条序列中间各漏 1 个
+    expect(outcome.hasMultiple).toBe(false);
+    expect(outcome.sequences).toEqual([
+      { pri, members: [0, 2, 4] },
+      { pri, members: [1, 3, 5] },
+    ]);
+  });
+});
+
+/* ---------------- 暴力对照 ---------------- */
+
 describe('audit：与暴力枚举对照', () => {
   it('300 组小规模随机用例的最优值、多解判定与规范解一致', () => {
     const rng = makeRng(20260920);

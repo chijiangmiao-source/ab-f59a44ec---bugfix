@@ -15,9 +15,14 @@ export interface AuditInput {
   maxMissed: 0 | 1 | 2;
 }
 
+/**
+ * 跨线程传输的打包输入。
+ * 时刻与重频可以是任意安全整数（最大 2^53 − 1，远超 32 位），
+ * 必须用 Float64Array 精确承载——Uint32Array 会把 ≥ 2^32 的值模 2^32 截断。
+ */
 export interface PackedAuditInput {
-  times: Uint32Array;
-  pris: Uint32Array;
+  times: Float64Array;
+  pris: Float64Array;
   maxMissed: 0 | 1 | 2;
 }
 

@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AuditInput, AuditOutcome, PackedAuditInput } from './solver/types';
+import type { AuditInput, AuditOutcome } from './solver/types';
 import { parseDraft, type Draft } from './solver/validate';
 import { EXAMPLES } from './solver/examples';
-import type { AuditResponse } from './worker/auditWorker';
+import {
+  packAuditInput,
+  packTransferables,
+  type AuditResponse,
+} from './worker/protocol';
 import { InputPanel } from './components/InputPanel';
 import { ResultView } from './components/ResultView';
 
@@ -79,14 +83,10 @@ export default function App() {
       if (workerRef.current === worker) workerRef.current = null;
       setAuditState({ status: 'error', message: ev.message || '计算过程发生未知错误' });
     };
-    const packedInput: PackedAuditInput = {
-      times: Uint32Array.from(parsed.input.times),
-      pris: Uint32Array.from(parsed.input.pris),
-      maxMissed: parsed.input.maxMissed,
-    };
+    const packedInput = packAuditInput(parsed.input);
     worker.postMessage(
       { id, input: packedInput },
-      [packedInput.times.buffer, packedInput.pris.buffer],
+      packTransferables(packedInput),
     );
   }, [draft, stopWorker]);
 

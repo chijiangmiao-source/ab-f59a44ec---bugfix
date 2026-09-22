@@ -32,14 +32,21 @@ import type {
 
 type Edge = number;
 
+/**
+ * 候选边打包进 32 位无符号整数：
+ * 低 5 位为终点下标（n ≤ 28），接着 2 位为漏发代价（k − 1 ≤ 2），
+ * 其余高位为重频在 priTable 中的**下标**。
+ * 注意不能打包重频本身：重频可以是任意安全整数（远超 32 位），
+ * 直接移位打包会被截断（例如 4328521727 会塌缩成 33554431）。
+ */
 const EDGE_TO_BITS = 5;
 const EDGE_COST_BITS = 2;
 const EDGE_META_BITS = EDGE_TO_BITS + EDGE_COST_BITS;
 const EDGE_TO_MASK = (1 << EDGE_TO_BITS) - 1;
 const EDGE_COST_MASK = (1 << EDGE_COST_BITS) - 1;
 
-function packEdge(to: number, pri: number, cost: number): Edge {
-  return ((pri << EDGE_META_BITS) | (cost << EDGE_TO_BITS) | to) >>> 0;
+function packEdge(to: number, priIdx: number, cost: number): Edge {
+  return ((priIdx << EDGE_META_BITS) | (cost << EDGE_TO_BITS) | to) >>> 0;
 }
 
 function edgeTo(edge: Edge): number {
@@ -50,46 +57,50 @@ function edgeCost(edge: Edge): number {
   return (edge >>> EDGE_TO_BITS) & EDGE_COST_MASK;
 }
 
-function edgePri(edge: Edge): number {
+function edgePriIdx(edge: Edge): number {
   return edge >>> EDGE_META_BITS;
 }
 
 /**
  * 构建候选边。vertices 给出参与搜索的原始下标（升序）；缺省为全部顶点。
- * 返回每个（局部）顶点的出边列表（按代价、终点、重频升序）及每个顶点的最大前驱下标。
+ * 返回每个（局部）顶点的出边列表（按代价、终点、重频升序）、每个顶点的最大前驱下标，
+ * 以及去重升序的重频表（边中只存表下标，重频值本身不受 32 位打包限制）。
  */
 function buildEdges(
   times: number[],
   pris: number[],
   maxMissed: number,
   vertices?: number[],
-): { out: Edge[][]; maxPred: number[] } {
+): { out: Edge[][]; maxPred: number[]; priTable: number[] } {
   const idx = vertices ?? times.map((_, i) => i);
   const m = idx.length;
   const kMax = maxMissed + 1;
+  const priTable = [...new Set(pris)].sort((a, b) => a - b);
   const out: Edge[][] = Array.from({ length: m }, () => []);
   for (let a = 0; a < m; a++) {
     for (let b = a + 1; b < m; b++) {
       const d = times[idx[b]] - times[idx[a]];
-      for (const p of pris) {
+      for (let pi = 0; pi < priTable.length; pi++) {
+        const p = priTable[pi];
         if (d >= p && d % p === 0) {
           const k = d / p;
-          if (k <= kMax) out[a].push(packEdge(b, p, k - 1));
+          if (k <= kMax) out[a].push(packEdge(b, pi, k - 1));
         }
       }
     }
   }
   for (const list of out) {
+    // 重频表升序 ⇒ 表下标升序即重频值升序
     list.sort(
       (x, y) =>
-        edgeCost(x) - edgeCost(y) || edgeTo(x) - edgeTo(y) || edgePri(x) - edgePri(y),
+        edgeCost(x) - edgeCost(y) || edgeTo(x) - edgeTo(y) || edgePriIdx(x) - edgePriIdx(y),
     );
   }
   const maxPred = new Array<number>(m).fill(-1);
   for (let a = 0; a < m; a++) {
     for (const e of out[a]) maxPred[edgeTo(e)] = a; // a 升序，最后写入即最大前驱
   }
-  return { out, maxPred };
+  return { out, maxPred, priTable };
 }
 
 /** 在一组顶点上执行分支限界搜索的上下文。 */
@@ -161,7 +172,7 @@ class CoverSearch {
   private take(i: number, e: Edge): void {
     const to = edgeTo(e);
     this.inFrom[to] = i;
-    this.inPri[to] = edgePri(e);
+    this.inPri[to] = edgePriIdx(e);
     this.inAssigned++;
   }
 
@@ -201,7 +212,7 @@ class CoverSearch {
       // 优先以同一重频延续当前序列
       const q = this.inPri[i];
       for (const ed of this.out[i]) {
-        if (edgePri(ed) !== q || this.inFrom[edgeTo(ed)] !== -1) continue;
+        if (edgePriIdx(ed) !== q || this.inFrom[edgeTo(ed)] !== -1) continue;
         this.take(i, ed);
         const stop = dfs(i + 1, e + 1, c + edgeCost(ed));
         this.untake(i, ed);
@@ -352,9 +363,8 @@ function canonicalSolution(
   C: number,
 ): PulseSequence[] {
   const n = times.length;
-  const { out } = buildEdges(times, pris, maxMissed);
+  const { out, priTable } = buildEdges(times, pris, maxMissed);
   const covered = new Array<boolean>(n).fill(false);
-  const priList = [...new Set(pris)].sort((a, b) => a - b);
   const sequences: PulseSequence[] = [];
   let eUsed = 0;
   let cUsed = 0;
@@ -377,15 +387,15 @@ function canonicalSolution(
     return sub.existsExact(restE, restC);
   };
 
-  /** 从 chain（重频 p）出发按成员字典序枚举：先“到此为止”，再按下标升序延长。 */
-  const extend = (chain: number[], p: number): number[] | null => {
-    if (chain.length >= 2 && feasibleWith(chain, p)) return [...chain];
+  /** 从 chain（重频表下标 priIdx）出发按成员字典序枚举：先“到此为止”，再按下标升序延长。 */
+  const extend = (chain: number[], priIdx: number): number[] | null => {
+    if (chain.length >= 2 && feasibleWith(chain, priTable[priIdx])) return [...chain];
     const last = chain[chain.length - 1];
     // 同一重频下，出边按代价升序即按终点下标升序（d = k·p 单调）
     for (const ed of out[last]) {
       const to = edgeTo(ed);
-      if (edgePri(ed) !== p || covered[to]) continue;
-      const r = extend([...chain, to], p);
+      if (edgePriIdx(ed) !== priIdx || covered[to]) continue;
+      const r = extend([...chain, to], priIdx);
       if (r) return r;
     }
     return null;
@@ -401,10 +411,10 @@ function canonicalSolution(
     }
     if (start === -1) break;
     let chosen: PulseSequence | null = null;
-    for (const p of priList) {
-      const chain = extend([start], p);
+    for (let pi = 0; pi < priTable.length; pi++) {
+      const chain = extend([start], pi);
       if (chain) {
-        chosen = { pri: p, members: chain };
+        chosen = { pri: priTable[pi], members: chain };
         break;
       }
     }
