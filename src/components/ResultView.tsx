@@ -1,4 +1,5 @@
 import type { AuditInput, AuditOutcome } from '../solver/types';
+import { sequenceMissed } from '../solver/solve';
 import { Timeline } from './Timeline';
 import { NoSolutionView } from './NoSolutionView';
 
@@ -95,13 +96,7 @@ export function ResultView({ input, outcome, elapsedMs }: ResultViewProps) {
             </thead>
             <tbody>
               {outcome.sequences.map((seq, s) => {
-                let missed = 0;
-                for (let k = 1; k < seq.members.length; k++) {
-                  missed +=
-                    (input.times[seq.members[k]] - input.times[seq.members[k - 1]]) /
-                      seq.pri -
-                    1;
-                }
+                const missed = sequenceMissed(input.times, seq);
                 return (
                   <tr key={s}>
                     <td>序列 {s + 1}</td>

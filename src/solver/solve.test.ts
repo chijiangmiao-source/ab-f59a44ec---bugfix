@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { audit, candidateInfo } from './solve';
+import { audit, candidateInfo, missedPositions, sequenceMissed } from './solve';
 import type { AuditInput, PulseSequence } from './types';
 
 /* ---------------- 暴力对照实现（仅测试用） ---------------- */
@@ -283,6 +283,121 @@ describe('audit：定向用例', () => {
     expect(info.outgoing).toEqual([1, 1, 1, 1, 1, 0]);
     expect(info.incoming).toEqual([0, 1, 1, 1, 1, 1]);
     expect(info.total).toEqual([1, 2, 2, 2, 2, 1]);
+  });
+});
+
+/* ---------------- 大数值（安全整数范围内） ---------------- */
+
+describe('audit：安全整数范围内的大数值', () => {
+  it('大重频（> 2^32）原样保留：双雷达各发三次、无漏发、唯一分组', () => {
+    // 验收用例：第一部 0 µs 起、第二部 100 µs 起，重频均为 4328521727 µs
+    const PRI = 4328521727;
+    const input: AuditInput = {
+      times: [0, 100, PRI, PRI + 100, 2 * PRI, 2 * PRI + 100],
+      pris: [PRI],
+      maxMissed: 0,
+    };
+    const outcome = audit(input);
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(0);
+    expect(outcome.hasMultiple).toBe(false);
+    // 规范解：零基下标 0/2/4 与 1/3/5 各成一条序列，重频不被改写
+    expect(outcome.sequences).toEqual([
+      { pri: PRI, members: [0, 2, 4] },
+      { pri: PRI, members: [1, 3, 5] },
+    ]);
+    // 明细复算漏发数恰为 0，时间轴不应出现任何漏发标记
+    for (const seq of outcome.sequences) {
+      expect(sequenceMissed(input.times, seq)).toBe(0);
+      expect(missedPositions(input.times, seq)).toEqual([]);
+    }
+  });
+
+  it('低 32 位相同的两个候选重频不会被混同', () => {
+    // 33554431 = 2^25 − 1 与 4328521727 = 2^32 + 33554431 的低位表示相同，
+    // 任何 32 位截断都会把二者混为一个重频
+    const P1 = 33554431;
+    const P2 = 4328521727;
+    const input: AuditInput = {
+      times: [0, 100, P1, 2 * P1, P2 + 100, 2 * P2 + 100],
+      pris: [P1, P2],
+      maxMissed: 0,
+    };
+    const outcome = audit(input);
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(0);
+    expect(outcome.hasMultiple).toBe(false);
+    expect(outcome.sequences).toEqual([
+      { pri: P1, members: [0, 2, 3] },
+      { pri: P2, members: [1, 4, 5] },
+    ]);
+  });
+
+  it('大重频含漏发：漏发数与漏发位置按原值精确复算', () => {
+    const P = 4294967297; // 2^32 + 1
+    const input: AuditInput = {
+      times: [0, 7, P, P + 7, 3 * P, 3 * P + 7],
+      pris: [P],
+      maxMissed: 2,
+    };
+    const outcome = audit(input);
+    expect(outcome.kind).toBe('solved');
+    if (outcome.kind !== 'solved') return;
+    expect(outcome.sequenceCount).toBe(2);
+    expect(outcome.totalMissed).toBe(2);
+    expect(outcome.sequences).toEqual([
+      { pri: P, members: [0, 2, 4] },
+      { pri: P, members: [1, 3, 5] },
+    ]);
+    // 每条序列漏 1 个，期望时刻为 2P 与 2P+7（均为 > 2^32 的精确整数）
+    expect(missedPositions(input.times, outcome.sequences[0])).toEqual([2 * P]);
+    expect(missedPositions(input.times, outcome.sequences[1])).toEqual([2 * P + 7]);
+    expect(
+      outcome.sequences.map((s) => sequenceMissed(input.times, s)),
+    ).toEqual([1, 1]);
+  });
+
+  it('大数值随机用例与暴力枚举对照', () => {
+    const rng = makeRng(20260922);
+    for (let t = 0; t < 40; t++) {
+      // 1–2 部雷达：大重频（2^32 附近及以上）+ 随机相位，随机漏发
+      const radarCount = 1 + Math.floor(rng() * 2);
+      const maxMissed = Math.floor(rng() * 3) as 0 | 1 | 2;
+      const times = new Set<number>();
+      const pris: number[] = [];
+      for (let r = 0; r < radarCount; r++) {
+        const pri = 4294967291 + Math.floor(rng() * 65536);
+        if (!pris.includes(pri)) pris.push(pri);
+        const phase = Math.floor(rng() * 1000);
+        const pulses = 3 + Math.floor(rng() * 3); // 每部 3–5 个脉冲
+        let slot = 0;
+        for (let k = 0; k < pulses; k++) {
+          times.add(phase + slot * pri);
+          slot += 1 + Math.floor(rng() * (maxMissed + 1));
+        }
+      }
+      const input: AuditInput = {
+        times: [...times].sort((a, b) => a - b),
+        pris,
+        maxMissed,
+      };
+      const brute = bruteForce(input.times, input.pris, input.maxMissed);
+      const outcome = audit(input);
+      if (brute === null) {
+        expect(outcome.kind, `用例 ${t} 应为无解`).toBe('no-solution');
+        continue;
+      }
+      expect(outcome.kind, `用例 ${t} 应有解`).toBe('solved');
+      if (outcome.kind !== 'solved') continue;
+      expect(outcome.sequenceCount, `用例 ${t} 序列数`).toBe(brute.sequenceCount);
+      expect(outcome.totalMissed, `用例 ${t} 漏发总数`).toBe(brute.totalMissed);
+      expect(outcome.hasMultiple, `用例 ${t} 多解判定`).toBe(brute.optimalCount >= 2);
+      expect(outcome.sequences, `用例 ${t} 规范解`).toEqual(brute.canonical);
+    }
   });
 });
 

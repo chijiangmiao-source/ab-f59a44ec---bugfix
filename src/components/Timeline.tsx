@@ -1,4 +1,5 @@
 import type { PulseSequence } from '../solver/types';
+import { missedPositions } from '../solver/solve';
 
 interface TimelineProps {
   times: number[];
@@ -29,11 +30,6 @@ const PAD_R = 24;
 const TOP_H = 64;
 const LANE_H = 72;
 const BOTTOM_H = 16;
-
-interface MissedMark {
-  t: number;
-  fromIdx: number;
-}
 
 /**
  * 时间轴视图：
@@ -96,16 +92,7 @@ export function Timeline({ times, sequences }: TimelineProps) {
         {sequences.map((seq, s) => {
           const y = TOP_H + s * LANE_H + LANE_H / 2;
           const color = PALETTE[s % PALETTE.length];
-          const missed: MissedMark[] = [];
-          for (let k = 1; k < seq.members.length; k++) {
-            const a = seq.members[k - 1];
-            const b = seq.members[k];
-            const gap = times[b] - times[a];
-            const mult = gap / seq.pri;
-            for (let j = 1; j < mult; j++) {
-              missed.push({ t: times[a] + seq.pri * j, fromIdx: a });
-            }
-          }
+          const missed = missedPositions(times, seq);
           const missedCount = missed.length;
           return (
             <g key={s}>
@@ -137,10 +124,10 @@ export function Timeline({ times, sequences }: TimelineProps) {
               })}
 
               {/* 漏发位置 */}
-              {missed.map((mk, j) => (
+              {missed.map((t, j) => (
                 <g key={`m${j}`}>
                   <circle
-                    cx={x(mk.t)}
+                    cx={x(t)}
                     cy={y}
                     r={6}
                     fill="#fff"
@@ -148,9 +135,9 @@ export function Timeline({ times, sequences }: TimelineProps) {
                     strokeWidth={1.6}
                     strokeDasharray="3 2"
                   >
-                    <title>{`漏发位置 · 期望时刻 ${mk.t} µs（序列 ${s + 1}，重频 ${seq.pri} µs）`}</title>
+                    <title>{`漏发位置 · 期望时刻 ${t} µs（序列 ${s + 1}，重频 ${seq.pri} µs）`}</title>
                   </circle>
-                  <text x={x(mk.t)} y={y - 10} className="missed-label" textAnchor="middle">
+                  <text x={x(t)} y={y - 10} className="missed-label" textAnchor="middle">
                     漏
                   </text>
                 </g>

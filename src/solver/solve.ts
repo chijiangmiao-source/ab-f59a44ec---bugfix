@@ -30,28 +30,17 @@ import type {
  *  - 前向检查：入边已无望的顶点必须还有可用出边，且数量不超过空闲入槽数。
  */
 
-type Edge = number;
-
-const EDGE_TO_BITS = 5;
-const EDGE_COST_BITS = 2;
-const EDGE_META_BITS = EDGE_TO_BITS + EDGE_COST_BITS;
-const EDGE_TO_MASK = (1 << EDGE_TO_BITS) - 1;
-const EDGE_COST_MASK = (1 << EDGE_COST_BITS) - 1;
-
-function packEdge(to: number, pri: number, cost: number): Edge {
-  return ((pri << EDGE_META_BITS) | (cost << EDGE_TO_BITS) | to) >>> 0;
-}
-
-function edgeTo(edge: Edge): number {
-  return edge & EDGE_TO_MASK;
-}
-
-function edgeCost(edge: Edge): number {
-  return (edge >>> EDGE_TO_BITS) & EDGE_COST_MASK;
-}
-
-function edgePri(edge: Edge): number {
-  return edge >>> EDGE_META_BITS;
+/**
+ * 候选边。重频与时刻可以是任意安全整数（可达 2^53 − 1），
+ * 因此边以普通对象保存原值：位打包会把大重频截断到 32 位以内。
+ */
+interface Edge {
+  /** 终点（局部顶点下标）。 */
+  readonly to: number;
+  /** 重频标签（微秒），原样保留的输入值。 */
+  readonly pri: number;
+  /** 漏发代价：时差 / 重频 − 1。 */
+  readonly cost: number;
 }
 
 /**
@@ -74,20 +63,17 @@ function buildEdges(
       for (const p of pris) {
         if (d >= p && d % p === 0) {
           const k = d / p;
-          if (k <= kMax) out[a].push(packEdge(b, p, k - 1));
+          if (k <= kMax) out[a].push({ to: b, pri: p, cost: k - 1 });
         }
       }
     }
   }
   for (const list of out) {
-    list.sort(
-      (x, y) =>
-        edgeCost(x) - edgeCost(y) || edgeTo(x) - edgeTo(y) || edgePri(x) - edgePri(y),
-    );
+    list.sort((x, y) => x.cost - y.cost || x.to - y.to || x.pri - y.pri);
   }
   const maxPred = new Array<number>(m).fill(-1);
   for (let a = 0; a < m; a++) {
-    for (const e of out[a]) maxPred[edgeTo(e)] = a; // a 升序，最后写入即最大前驱
+    for (const e of out[a]) maxPred[e.to] = a; // a 升序，最后写入即最大前驱
   }
   return { out, maxPred };
 }
@@ -98,7 +84,8 @@ class CoverSearch {
   private readonly out: Edge[][];
   private readonly maxPred: number[];
   private readonly inFrom: Int32Array;
-  private readonly inPri: Int32Array;
+  // 重频为安全整数（可达 2^53 − 1），Float64Array 才能精确存放
+  private readonly inPri: Float64Array;
   private inAssigned = 0;
 
   constructor(
@@ -112,7 +99,7 @@ class CoverSearch {
     this.out = out;
     this.maxPred = maxPred;
     this.inFrom = new Int32Array(this.m).fill(-1);
-    this.inPri = new Int32Array(this.m).fill(-1);
+    this.inPri = new Float64Array(this.m).fill(-1);
   }
 
   /** 存在既无入边也无出边的顶点时，必然无法全覆盖。 */
@@ -134,7 +121,7 @@ class CoverSearch {
       if (this.inFrom[j] === -1 && this.maxPred[j] < i) {
         let ok = false;
         for (const e of this.out[j]) {
-          if (this.inFrom[edgeTo(e)] === -1) {
+          if (this.inFrom[e.to] === -1) {
             ok = true;
             break;
           }
@@ -159,14 +146,14 @@ class CoverSearch {
   }
 
   private take(i: number, e: Edge): void {
-    const to = edgeTo(e);
+    const to = e.to;
     this.inFrom[to] = i;
-    this.inPri[to] = edgePri(e);
+    this.inPri[to] = e.pri;
     this.inAssigned++;
   }
 
   private untake(_i: number, e: Edge): void {
-    const to = edgeTo(e);
+    const to = e.to;
     this.inFrom[to] = -1;
     this.inPri[to] = -1;
     this.inAssigned--;
@@ -190,9 +177,9 @@ class CoverSearch {
       if (this.inFrom[i] === -1) {
         // i 必须作为新序列起点，选择一条出边
         for (const ed of this.out[i]) {
-          if (this.inFrom[edgeTo(ed)] !== -1) continue;
+          if (this.inFrom[ed.to] !== -1) continue;
           this.take(i, ed);
-          const stop = dfs(i + 1, e + 1, c + edgeCost(ed));
+          const stop = dfs(i + 1, e + 1, c + ed.cost);
           this.untake(i, ed);
           if (stop) return true;
         }
@@ -201,9 +188,9 @@ class CoverSearch {
       // 优先以同一重频延续当前序列
       const q = this.inPri[i];
       for (const ed of this.out[i]) {
-        if (edgePri(ed) !== q || this.inFrom[edgeTo(ed)] !== -1) continue;
+        if (ed.pri !== q || this.inFrom[ed.to] !== -1) continue;
         this.take(i, ed);
-        const stop = dfs(i + 1, e + 1, c + edgeCost(ed));
+        const stop = dfs(i + 1, e + 1, c + ed.cost);
         this.untake(i, ed);
         if (stop) return true;
       }
@@ -285,7 +272,7 @@ export function candidateInfo(
   const incoming = new Array<number>(n).fill(0);
   for (let i = 0; i < n; i++) {
     outgoing[i] = out[i].length;
-    for (const e of out[i]) incoming[edgeTo(e)]++;
+    for (const e of out[i]) incoming[e.to]++;
   }
   return {
     total: outgoing.map((v, i) => v + incoming[i]),
@@ -327,12 +314,29 @@ export function audit(input: AuditInput): AuditOutcome {
 }
 
 /** 一条序列的漏发总数：Σ（相邻时差 / 重频 − 1）。 */
-function sequenceMissed(times: number[], seq: PulseSequence): number {
+export function sequenceMissed(times: number[], seq: PulseSequence): number {
   let s = 0;
   for (let t = 1; t < seq.members.length; t++) {
     s += (times[seq.members[t]] - times[seq.members[t - 1]]) / seq.pri - 1;
   }
   return s;
+}
+
+/**
+ * 一条序列中全部漏发位置的期望时刻（µs，升序）：
+ * 相邻脉冲之间按重频应出现而未出现的时刻。结果摘要、时间轴与导出复核共用此实现。
+ */
+export function missedPositions(times: number[], seq: PulseSequence): number[] {
+  const marks: number[] = [];
+  for (let k = 1; k < seq.members.length; k++) {
+    const a = times[seq.members[k - 1]];
+    const b = times[seq.members[k]];
+    const mult = (b - a) / seq.pri;
+    for (let j = 1; j < mult; j++) {
+      marks.push(a + seq.pri * j);
+    }
+  }
+  return marks;
 }
 
 /**
@@ -383,8 +387,8 @@ function canonicalSolution(
     const last = chain[chain.length - 1];
     // 同一重频下，出边按代价升序即按终点下标升序（d = k·p 单调）
     for (const ed of out[last]) {
-      const to = edgeTo(ed);
-      if (edgePri(ed) !== p || covered[to]) continue;
+      const to = ed.to;
+      if (ed.pri !== p || covered[to]) continue;
       const r = extend([...chain, to], p);
       if (r) return r;
     }

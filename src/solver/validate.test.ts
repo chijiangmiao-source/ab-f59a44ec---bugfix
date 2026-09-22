@@ -95,6 +95,20 @@ describe('parseDraft', () => {
     if (r.ok) return;
     expect(r.errors.length).toBeGreaterThanOrEqual(4);
   });
+
+  it('安全整数范围内的大数值被接受且原样保留', () => {
+    const r = parseDraft({
+      timesText: '0 100 4328521727 4328521827 8657043454 8657043554',
+      prisText: '4328521727',
+      maxMissed: 0,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.input.times).toEqual([
+      0, 100, 4328521727, 4328521827, 8657043454, 8657043554,
+    ]);
+    expect(r.input.pris).toEqual([4328521727]);
+  });
 });
 
 describe('countTokens', () => {
